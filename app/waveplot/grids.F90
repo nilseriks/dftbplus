@@ -30,6 +30,7 @@ module waveplot_grids
   public :: TGridData, TGridData_init
   public :: TRealTessY, TRealTessY_init
   public :: subgridsToGlobalGrid
+  public :: modifyEigenvecs
 
 
   type :: TGrid
@@ -1093,7 +1094,7 @@ contains
 
 
   subroutine subgridsToUncachedGlobalGrid(globalGridDat, subgridsDat, coords, coeffs,&
-      & orbitalToAtom, orbitalToSubgrid, nRegions, addDensities)
+      & orbitalToAtom, orbitalToSubgrid, nRegions, addDensities, gridInterType)
 
     !> representation of volumetric grid and data
     type(TGridData), intent(inout) :: globalGridDat
@@ -1118,6 +1119,9 @@ contains
 
     !> add densities instead of wave functions
     logical, intent(in), optional :: addDensities
+
+    !> Interpolation type for the grid interpolation
+    character(len=*), intent(in), optional :: gridInterType
 
     !> grid parallel regions, holding global grid sections
     type(TGridData), allocatable :: regionGridDat(:)
@@ -1161,12 +1165,11 @@ contains
     ! assign subgrids to parallel regions of the total grid
     do iGrid = 1, nRegions
       tmpGrid = globalGridDat%grid
-      tmpGrid%lowerBounds(3) = tiling(1, iGrid)
-      tmpGrid%upperBounds(3) = tiling(2, iGrid)
+      tmpGrid%lowerBounds(3) = tiling(1, iGrid) - 1
+      tmpGrid%upperBounds(3) = tiling(2, iGrid) - 1
       tmpGrid%nPoints(3) = tiling(2, iGrid) - tiling(1, iGrid) + 1
       pTmpData => globalGridDat%data(:,:, tiling(1, iGrid):tiling(2, iGrid))
-      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, rwInterType='spline',&
-          & gridInterType='linear')
+      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, gridInterType=gridInterType)
     end do
 
     !$omp parallel do default(none)&
@@ -1194,7 +1197,8 @@ contains
 
 
   subroutine subgridsToCachedGlobalGrids(globalGridDat, subgridsDat, coords, coeffs, levelIndex,&
-      & orbitalToAtom, orbitalToSubgrid, nRegions, pCopyBuffers, globalGridsDat, addDensities)
+      & orbitalToAtom, orbitalToSubgrid, nRegions, pCopyBuffers, globalGridsDat, addDensities,&
+      & gridInterType)
 
     !> prototype of global grid instance
     type(TGridData), intent(in) :: globalGridDat
@@ -1206,7 +1210,7 @@ contains
     real(dp), intent(in) :: coords(:,:,:)
 
     !> orbital-resolved coefficients for volumetric data, exp. shape: [nOrbitals, nCache]
-    real(dp), intent(in) :: coeffs(:,:)
+    real(dp), intent(in) :: coeffs(:,:,:,:)
 
     !> Index Mapping from state index to [Level, KPoint, Spin]
     integer, intent(in) :: levelIndex(:,:)
@@ -1229,6 +1233,9 @@ contains
     !> add densities instead of wave functions
     logical, intent(in), optional :: addDensities
 
+    !> Interpolation type for the grid interpolation
+    character(len=*), intent(in), optional :: gridInterType
+
     !> grid parallel regions, holding global grid sections
     type(TGridData), allocatable :: regionGridDat(:)
 
@@ -1246,7 +1253,7 @@ contains
     real(dp), pointer :: pRegionData(:,:,:), pTmpData(:,:,:)
 
     !> auxiliary variables
-    integer :: iGrid, iOrb, iCell, iAtom, iSubgrid, iState
+    integer :: iGrid, iOrb, iCell, iAtom, iSubgrid, iState, iSpin, iKPoint, iL
 
     ! try to ensure a smooth runtime
     @:ASSERT(size(coeffs, dim=1) == size(orbitalToAtom))
@@ -1264,7 +1271,7 @@ contains
     end if
 
     ! generate global grid caches from prototype
-    allocate(globalGridsDat(size(coeffs, dim=2)))
+    allocate(globalGridsDat(size(coeffs, dim=2) * size(coeffs, dim=3) * 2))
     globalGridsDat(:) = globalGridDat
 
     ! separate data pointers for grid caches
@@ -1281,18 +1288,20 @@ contains
     ! assign subgrids to parallel regions of the total grid
     do iGrid = 1, nRegions
       tmpGrid = globalGridDat%grid
-      tmpGrid%lowerBounds(3) = tiling(1, iGrid)
-      tmpGrid%upperBounds(3) = tiling(2, iGrid)
+      tmpGrid%lowerBounds(3) = tiling(1, iGrid) - 1
+      tmpGrid%upperBounds(3) = tiling(2, iGrid) - 1
       tmpGrid%nPoints(3) = tiling(2, iGrid) - tiling(1, iGrid) + 1
       pTmpData => globalGridDat%data(:,:, tiling(1, iGrid):tiling(2, iGrid))
-      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, rwInterType='spline',&
-          & gridInterType='linear')
+      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, gridInterType=gridInterType)
     end do
+
+    write(*, '(/A)') 'shape(coeffs)'
+    write(*,*) shape(coeffs)
 
     !$omp parallel do default(none)&
     !$omp& shared(nRegions, regionGridDat, subgridsDat, orbitalToAtom, orbitalToSubgrid,&
     !$omp& coords, coeffs, levelIndex, globalGridsDat, tiling, tAddDensities)&
-    !$omp& private(iGrid, iOrb, iAtom, iSubgrid, iCell, iState)
+    !$omp& private(iGrid, iOrb, iAtom, iSubgrid, iCell, iState, iL, iSpin, iKPoint)
     lpGrid: do iGrid = 1, nRegions
       lpOrb: do iOrb = 1, size(coeffs, dim=1)
 
@@ -1312,9 +1321,13 @@ contains
         ! distribute molecular orbitals to state-resolved global grid caches
         lpStates: do iState = 1, size(levelIndex, dim=2)
 
+          iL = levelIndex(1, iState)
+          iKPoint = levelIndex(2, iState)
+          iSpin = levelIndex(3, iState)
+
           globalGridsDat(iState)%data(:,:, tiling(1, iGrid):tiling(2, iGrid)) =&
               & globalGridsDat(iState)%data(:,:, tiling(1, iGrid):tiling(2, iGrid))&
-              & + coeffs(iOrb, iState) * regionGridDat(iGrid)%data
+              & + coeffs(iOrb, iL, iKPoint, iSpin) * regionGridDat(iGrid)%data
 
         end do lpStates
 
@@ -1408,6 +1421,38 @@ contains
     end do
 
   end subroutine checkParallelBasis
+
+
+    ! Takes a 2d array of eigenvectors where the first dimension runs over the orbitals and the
+  ! second dimension runs over the eigenvectors for each level, k-point and spin. It converts this
+  ! array to a 4d array, where the dimensions are the following:
+  ! [orbitals, eigenvectors, k-points, spin].
+  subroutine modifyEigenvecs(eigenvecs_old, eigenvecs_new, KPointNum, SpinNum)
+
+    real(dp), intent(in) :: eigenvecs_old(:,:)
+    !> Dimensions of eigenvecs_new hold the following data: [orbitals, eigenvectors, k-points, spin]
+    real(dp), intent(out) :: eigenvecs_new(:,:,:,:)
+
+    integer, intent(in) :: SpinNum
+    integer, intent(in) :: KPointNum
+
+    integer :: nBlock
+
+    !> auxillary variables for do loops
+    integer :: iKP, iS, iL
+
+    nBlock = 0
+    do iS = 1, SpinNum
+      do iKP = 1, KPointNum
+        do iL = 1, size(eigenvecs_old, dim=1)
+          eigenvecs_new(:, iL, iKP, iS) = eigenvecs_old(:, iL + size(eigenvecs_old, dim=1) * nBlock)
+        end do
+        nBlock = nBlock + 1
+      end do
+    end do
+
+  end subroutine modifyEigenvecs
+
 
 
   pure function crossProduct(vec1, vec2) result(cross)

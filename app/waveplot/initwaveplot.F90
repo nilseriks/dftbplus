@@ -27,9 +27,11 @@ module waveplot_initwaveplot
   use dftbp_type_linkedlist, only : TListIntR1, TListReal, init, destruct, len, append, asArray
   use dftbp_type_typegeometryhsd, only : TGeometry, readTGeometryGen, readTGeometryHSD,&
       & readTGeometryVasp, readTGeometryXyz, writeTGeometryHSD
+  use dftbp_io_charmanip, only : tolower
 
   ! use waveplot_gridcache, only : TGridCache, init
   use waveplot_molorb, only : TMolecularOrbital, init, TSpeciesBasis
+  use waveplot_grids, only : modifyEigenvecs
   use waveplot_slater, only : init
 
 
@@ -70,7 +72,7 @@ module waveplot_initwaveplot
     integer :: nState
 
     !> Real eigenvectors
-    real(dp), allocatable :: eigvecsReal(:,:)
+    real(dp), allocatable :: eigvecsReal(:,:,:,:)
 
     !> Complex eigenvectors
     complex(dp), allocatable :: eigvecsCplx(:,:)
@@ -149,6 +151,9 @@ module waveplot_initwaveplot
 
     !> List of levels to plot, whereby insignificant occupations were filtered out
     integer, allocatable :: levelIndex(:,:)
+
+    character(len=:), allocatable :: rwInterType
+    character(len=:), allocatable :: gridInterType
 
     ! !> Origin of the (species) grids in the box
     ! real(dp), allocatable :: spGridOrigs(:,:)
@@ -286,6 +291,9 @@ contains
 
     logical :: tGroundState
 
+    !> Array to temporary store the eigenvectors from the eigenvec.bin file
+    real(dp), allocatable :: tmparray(:,:)
+
     !! Write header
     write(stdout, "(A)") repeat("=", 80)
     write(stdout, "(A)") "     WAVEPLOT  " // version
@@ -326,8 +334,10 @@ contains
 
     !! Read eigenvectors
     if (this%xml%tRealHam) then
-      allocate(this%eig%eigvecsReal(this%xml%nOrb, this%eig%nState))
-      call readEigenvecs(eigVecBin, this%eig%eigvecsReal)
+      allocate(tmparray(this%xml%nOrb, this%eig%nState * nKPoint * nSpin))
+      allocate(this%eig%eigvecsReal(this%xml%nOrb, this%eig%nState, 1, nSpin))
+      call readEigenvecs(eigVecBin, tmparray)
+      call modifyEigenvecs(tmparray, this%eig%eigvecsReal, 1, nSpin)
     else
       allocate(this%eig%eigvecsCplx(this%xml%nOrb, this%eig%nState))
       call readEigenvecs(eigVecBin, this%eig%eigvecsCplx)
@@ -525,6 +535,12 @@ contains
 
     call getChildValue(node, "TotalChargeDensity", this%option%tPlotTotChrg, .false.)
 
+    call getChildValue(node, "RadialWFInterpolation", Buffer, "spline")
+    this%option%rwInterType = unquote(char(Buffer))
+
+    call getChildValue(node, "GridInterpolation", Buffer, "linear")
+    this%option%gridInterType = unquote(char(Buffer))
+
     if (nSpin == 2) then
       call getChildValue(node, "TotalSpinPolarisation", this%option%tPlotTotSpin, .false.)
     else
@@ -592,27 +608,7 @@ contains
     call destruct(indexBuffer)
 
     allocate(this%option%levelIndex(3, size(levelIndex, dim=2)))
-
-    ! Make sure, level entries are correctly sorted in the list
-    ind = 1
-    do iSpin = 1, nSpin
-      do iKPoint = 1, nKPoint
-        do iLevel = 1, nLevel
-          curVec = [iLevel, iKPoint, iSpin]
-          tFound = .false.
-          lpLevelIndex: do ii = 1, size(levelIndex, dim=2)
-            tFound = all(levelIndex(:, ii) == curVec)
-            if (tFound) then
-              exit lpLevelIndex
-            end if
-          end do lpLevelIndex
-          if (tFound) then
-            this%option%levelIndex(:, ind) = curVec(:)
-            ind = ind + 1
-          end if
-        end do
-      end do
-    end do
+    this%option%levelIndex = levelIndex
 
     call getChildValue(node, "SpGridPoints", this%option%nSpPoints, child=field)
     if (any(this%option%nSpPoints <= 0)) then
@@ -865,7 +861,7 @@ contains
     integer :: fd, iOrb, dummy
     logical :: exst
 
-    nOrb = size(eigenvecs, dim=1)
+    nOrb = size(eigenvecs, dim=2)
 
     inquire(file=filename, exist=exst)
 

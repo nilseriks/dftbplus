@@ -76,6 +76,7 @@ program waveplot
 
   integer :: jj, iL, iM
   integer :: maxAng
+  character(len=100) :: strbuffer
 
 #:if WITH_MPI
   !> MPI environment, if compiled with mpifort
@@ -92,6 +93,12 @@ program waveplot
   ! Allocate resources
   call TProgramVariables_init(wp)
   write(stdout, "(/,A,/)") "Starting main program"
+
+  write(strbuffer, "(I3)") size(wp%option%levelIndex, dim=2)
+  write(strbuffer, *) '(' // trim(strBuffer) // '(i3, 3X))'
+
+  write(*, '(/A)') "waveplot - wp%option%levelIndex"
+  write(*, strBuffer) transpose(wp%option%levelIndex)
 
   ! Allocating buffer for general grid, total charge and spin up
   allocate(buffer(wp%option%nTotPoints(1), wp%option%nTotPoints(2), wp%option%nTotPoints(3)))
@@ -132,7 +139,8 @@ program waveplot
 
   ! Initialise total grid and volumetric data
   call TGrid_init(totGrid, wp%option%totGridOrig, wp%internal%totGridVec, wp%option%nTotPoints)
-  call TGridData_init(totGridDat, totGrid, pBuffer, rwInterType='spline', gridInterType='trivial')
+  call TGridData_init(totGridDat, totGrid, pBuffer, rwInterType=wp%option%rwInterType,&
+    & gridInterType=wp%option%gridInterType)
 
   ! Initialise atomic volumetric data
   allocate(speciesGrids(wp%xml%geo%nSpecies))
@@ -155,7 +163,7 @@ program waveplot
       iL = wp%internal%molorb%angMoms(iAng)
       do iM = - iL, iL
         call TGridData_init(speciesGridsDat(ind), speciesGrids(iSpecies), pSpeciesChrg(:,:,:,ind),&
-            & rwInterType='spline', gridInterType='trivial')
+            & rwInterType=wp%option%rwInterType, gridInterType=wp%option%gridInterType)
         call speciesGridsDat(ind)%tabulateBasis(wp%internal%molorb%rwfs(iAng)%rwf,&
             & speciesRty(iSpecies), iL, iM)
         ind = ind + 1
@@ -172,12 +180,12 @@ program waveplot
     pAtomicChrg => atomicChrg
 
     ! Initialise volumetric data
-    call TGridData_init(atomicGridDat, totGrid, pAtomicChrg, rwInterType='spline',&
-        & gridInterType='trivial')
+    call TGridData_init(atomicGridDat, totGrid, pAtomicChrg, rwInterType=wp%option%rwInterType,&
+        & gridInterType=wp%option%gridInterType)
 
     call subgridsToGlobalGrid(atomicGridDat, speciesGridsDat, wp%internal%molorb%coords,&
         & wp%internal%orbitalOcc(:, 1), wp%internal%orbitalToAtom, wp%internal%orbitalToSpecies,&
-        & 4, .true.)
+        & 4, .true., wp%option%gridInterType)
 
     atomicChrg = atomicGridDat%data
     sumAtomicChrg = sum(atomicChrg) * wp%internal%gridVol
@@ -270,7 +278,14 @@ program waveplot
   ! Calculate the molecular orbitals
   call subgridsToGlobalGrid(totGridDat, speciesGridsDat, wp%internal%molorb%coords,&
       & wp%eig%eigvecsReal, wp%option%levelIndex, wp%internal%orbitalToAtom,&
-      & wp%internal%orbitalToSpecies, 4, pCopyBuffers, totGridsDat, addDensities=.false.)
+      & wp%internal%orbitalToSpecies, 4, pCopyBuffers, totGridsDat, addDensities=.false.,&
+      & gridInterType=wp%option%gridInterType)
+  
+  write(*, '(/A)') "shape(totGridsDat)"
+  write(*,*) shape(totGridsDat)
+
+
+  write(*, '(/A)') "iLevel  iKPoint   iSpin   tPlotLevel"
 
   ! Process the molecular orbitals and write them to the disc
   lpProcessStates: do ii = 1, size(wp%option%levelIndex, dim=2)
@@ -314,6 +329,14 @@ program waveplot
       end if
 
     end if
+
+    write(*, *) iLevel, iKPoint, iSpin, tPlotLevel
+    write(*,*) minval(minval(totGridsDat(ii)%data, dim=1)), &
+      & maxval(maxval(totGridsDat(ii)%data, dim=1))
+    write(*,*) minval(minval(totGridsDat(ii)%data, dim=2)), &
+      & maxval(maxval(totGridsDat(ii)%data, dim=2))
+    write(*,*) minval(minval(totGridsDat(ii)%data, dim=3)), &
+      & maxval(maxval(totGridsDat(ii)%data, dim=3))
 
     ! Build and dump desired properties of the current level
     if (tPlotLevel) then
