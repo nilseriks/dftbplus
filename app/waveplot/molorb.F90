@@ -134,6 +134,8 @@ contains
     real(dp) :: mCutoff
     real(dp), allocatable :: rCellVec(:,:)
 
+    character(len=100) strbuffer
+
     @:ASSERT(.not. this%tInitialised)
     @:ASSERT(geometry%nSpecies == size(basis))
 
@@ -189,6 +191,12 @@ contains
       ! Get cell shift vectors according to maximum cutoff
       call getCellTranslations(this%cellVec, rCellVec, this%latVecs, this%recVecs2p, mCutoff)
       this%nCell = size(this%cellVec, dim=2)
+
+      write(*, '(/A)') 'molorb.F90 - this%cellVec'
+      write(*,*) shape(this%cellVec)
+      write(strBuffer, "(I2)") size(this%cellVec, dim=2)
+      write(strBuffer, *) '(' // trim(strbuffer) // '(f3.0, 1X))'
+      write(*, strbuffer) transpose(this%cellVec)
 
     else
 

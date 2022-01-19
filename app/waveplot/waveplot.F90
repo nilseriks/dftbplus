@@ -41,7 +41,7 @@ program waveplot
 
   !> Grid data instances
   type(TGridData) :: totGridDat, atomicGridDat
-  type(TGridData), allocatable :: speciesGridsDat(:), totGridsDat(:)
+  type(TGridData), allocatable :: speciesGridsDat(:)
 
   !> Representation of real tesseral spherical harmonics
   type(TRealTessY), allocatable :: speciesRty(:)
@@ -65,13 +65,16 @@ program waveplot
   logical :: tPlotLevel
 
   !> Arrays holding the volumetric grid data
+  real(dp), allocatable :: totGridsDat(:,:,:,:)
+  complex(dp), allocatable :: totGridsDatCplx(:,:,:,:,:)
+  ! complex(dp), allocatable :: totGridDat(:,:,:,:)
   real(dp), allocatable, target ::  totChrg(:,:,:), atomicChrg(:,:,:), speciesChrg(:,:,:,:)
   real(dp), allocatable, target :: totData(:,:,:), buffer(:,:,:), spinUp(:,:,:)
-  real(dp), allocatable, target :: copyBuffers(:,:,:,:)
+  real(dp), allocatable, target :: copyBuffers(:,:,:,:), copyBuffersCplx(:,:,:,:)
   real(dp) :: sumTotChrg, sumAtomicChrg, sumChrg
 
   !> Pointers to arrays holding the volumetric grid data
-  real(dp), pointer ::  pAtomicChrg(:,:,:), pSpeciesChrg(:,:,:,:)
+  real(dp), pointer ::  pAtomicChrg(:,:,:), pSpeciesChrg(:,:,:)
   real(dp), pointer :: pTotData(:,:,:), pBuffer(:,:,:), pCopyBuffers(:,:,:,:)
 
   integer :: jj, iL, iM
@@ -95,10 +98,16 @@ program waveplot
   write(stdout, "(/,A,/)") "Starting main program"
 
   write(strbuffer, "(I3)") size(wp%option%levelIndex, dim=2)
-  write(strbuffer, *) '(' // trim(strBuffer) // '(i3, 3X))'
+  write(strbuffer, *) '(' // trim(strBuffer) // '(i3, 1X))'
 
   write(*, '(/A)') "waveplot - wp%option%levelIndex"
   write(*, strBuffer) transpose(wp%option%levelIndex)
+
+  ! write(strbuffer, "(I3)") size(wp%xml%kPointsWeights, dim=2)
+  ! write(strbuffer, *) '(' // trim(strBuffer) // '(i3, 3X))'
+
+  ! write(*, '(/A)') "wp%xml%kPointsWeights"
+  ! write(*, strbuffer) transpose(wp%xml%)
 
   ! Allocating buffer for general grid, total charge and spin up
   allocate(buffer(wp%option%nTotPoints(1), wp%option%nTotPoints(2), wp%option%nTotPoints(3)))
@@ -111,6 +120,9 @@ program waveplot
       & size(wp%option%levelIndex, dim=2)))
   copyBuffers(:,:,:,:) = 0.0_dp
   pCopyBuffers => copyBuffers
+  allocate(copyBuffersCplx(wp%option%nTotPoints(1), wp%option%nTotPoints(2), wp%option%nTotPoints(3),&
+      & size(wp%option%levelIndex, dim=2)))
+  copyBuffersCplx(:,:,:,:) = 0.0_dp
 
   if (wp%option%tCalcTotChrg) then
     allocate(totChrg(wp%option%nTotPoints(1), wp%option%nTotPoints(2), wp%option%nTotPoints(3)))
@@ -149,7 +161,6 @@ program waveplot
   allocate(speciesChrg(wp%option%nSpPoints(1), wp%option%nSpPoints(2), wp%option%nSpPoints(3),&
       & maxval(wp%internal%orbitalToSpecies)))
   speciesChrg(:,:,:,:) = 0.0_dp
-  pSpeciesChrg => speciesChrg
 
   ind = 1
 
@@ -162,7 +173,8 @@ program waveplot
     do iAng = wp%internal%molorb%iStos(iSpecies), wp%internal%molorb%iStos(iSpecies + 1) - 1
       iL = wp%internal%molorb%angMoms(iAng)
       do iM = - iL, iL
-        call TGridData_init(speciesGridsDat(ind), speciesGrids(iSpecies), pSpeciesChrg(:,:,:,ind),&
+        pSpeciesChrg => speciesChrg(:,:,:,ind)
+        call TGridData_init(speciesGridsDat(ind), speciesGrids(iSpecies), pSpeciesChrg,&
             & rwInterType=wp%option%rwInterType, gridInterType=wp%option%gridInterType)
         call speciesGridsDat(ind)%tabulateBasis(wp%internal%molorb%rwfs(iAng)%rwf,&
             & speciesRty(iSpecies), iL, iM)
@@ -275,15 +287,60 @@ program waveplot
 
   end if
 
-  ! Calculate the molecular orbitals
-  call subgridsToGlobalGrid(totGridDat, speciesGridsDat, wp%internal%molorb%coords,&
-      & wp%eig%eigvecsReal, wp%option%levelIndex, wp%internal%orbitalToAtom,&
-      & wp%internal%orbitalToSpecies, 4, pCopyBuffers, totGridsDat, addDensities=.false.,&
-      & gridInterType=wp%option%gridInterType)
-  
-  write(*, '(/A)') "shape(totGridsDat)"
-  write(*,*) shape(totGridsDat)
+  ! call subgridsToGlobalGrid(totGridDat, speciesGridsDat, wp%internal%molorb%coords,&
+  !       & wp%eig%eigvecsReal, wp%option%levelIndex, wp%internal%orbitalToAtom,&
+  !       & wp%internal%orbitalToSpecies, 4, pCopyBuffers, totGridsDat, addDensities=.false., &
+  !       & gridInterType=wp%option%gridInterType, kPointsandWeights=wp%xml%kPointsandWeight)
 
+  ! write(*,*) "totGridsDat(:,:,:,1)"
+  ! write(*,*) minval(minval(totGridsDat(:,:,:,1), dim=1)), &
+  !   & maxval(maxval(totGridsDat(:,:,:,1), dim=1))
+  ! write(*,*) minval(minval(totGridsDat(:,:,:,1), dim=2)), &
+  !   & maxval(maxval(totGridsDat(:,:,:,1), dim=2))
+  ! write(*,*) minval(minval(totGridsDat(:,:,:,1), dim=3)), &
+  !   & maxval(maxval(totGridsDat(:,:,:,1), dim=3))
+
+  pCopyBuffers => copyBuffersCplx
+
+  call subgridsToGlobalGrid(totGridDat, speciesGridsDat, wp%internal%molorb%coords,&
+        & wp%eig%eigvecsCplx, wp%option%levelIndex, wp%internal%orbitalToAtom,&
+        & wp%internal%orbitalToSpecies, 4, pCopyBuffers, totGridsDatCplx, &
+        & wp%option%plottedKPoints, addDensities=.false., &
+        & gridInterType=wp%option%gridInterType, kPointsandWeights=wp%xml%kPointsandWeight)
+
+  write(strbuffer, "(I2)") size(wp%eig%eigvecsReal(:,:,1,1), dim=2)
+  write(*,*) shape(wp%eig%eigvecsReal(:,:,1,1))
+  write(strbuffer, *) '(' // trim(strbuffer) // '(f5.3, 1X))'
+
+  ! write(*, "(/A)") repeat("#", 50)
+  ! write(*,*) "within waveplot.F90:"
+  ! write(*, "(/A)") "wp%eig%eigvecsReal"
+  ! write(*, strbuffer) transpose(wp%eig%eigvecsReal(:,:,8,1))
+
+  ! write(strbuffer, "(I2)") size(wp%eig%eigvecsCplx(:,:,2,1), dim=2)
+  ! write(*,*) shape(wp%eig%eigvecsCplx(:,:,2,1))
+  ! write(strbuffer, *) '(' // trim(strbuffer) // '(f5.3, 1X))'
+
+  ! write(*, "(/A)") repeat("#", 50)
+  ! write(*,*) "within waveplot.F90:"
+  ! write(*, "(/A)") "wp%eig%eigvecsCplx"
+  ! write(*, strbuffer) transpose(wp%eig%eigvecsCplx(:,:,6,1))
+  
+  ! write(*, '(/A)') "shape(totGridsDat)"
+  ! write(*,*) shape(totGridsDat)
+
+  allocated(iKPointprime(size(wp%option%levelIndex, dim=2)))
+
+  ! do ii = 1, size(wp%option%levelIndex, dim=2)
+  !   if (ii .eq. 0) then
+  !     iKPointprime(ii)
+  !   iKPoint = wp%option%levelIndex(2, ii - 1)
+  !   if (iKPoint .eq. wp%option%levelIndex(2, ii)) then
+  !     iKPointprime(ii) = iKPointprime(ii - 1) + 1
+  !   else
+  !     iKPointprime(ii) = iKPointprime(ii)
+
+  write(*,*) wp%option%plottedKPoints
 
   write(*, '(/A)') "iLevel  iKPoint   iSpin   tPlotLevel"
 
@@ -312,9 +369,9 @@ program waveplot
         & wp%option%tPlotChrgDiff))) then
 
       if (wp%xml%tRealHam) then
-        buffer(:,:,:) = totGridsDat(ii)%data**2
+        buffer(:,:,:) = totGridsDat(:,:,:,ii)**2
       else
-        buffer(:,:,:) = abs(totGridsDat(ii)%data)**2
+        buffer(:,:,:) = abs(totGridsDatCplx(:,:,:, iLevel, iKPoint))**2
       end if
 
       if (wp%option%tCalcTotChrg) then
@@ -330,13 +387,13 @@ program waveplot
 
     end if
 
-    write(*, *) iLevel, iKPoint, iSpin, tPlotLevel
-    write(*,*) minval(minval(totGridsDat(ii)%data, dim=1)), &
-      & maxval(maxval(totGridsDat(ii)%data, dim=1))
-    write(*,*) minval(minval(totGridsDat(ii)%data, dim=2)), &
-      & maxval(maxval(totGridsDat(ii)%data, dim=2))
-    write(*,*) minval(minval(totGridsDat(ii)%data, dim=3)), &
-      & maxval(maxval(totGridsDat(ii)%data, dim=3))
+    ! write(*, *) iLevel, iKPoint, iSpin, tPlotLevel
+    ! write(*,*) minval(minval(totGridsDat(:,:,:,ii), dim=1)), &
+    !   & maxval(maxval(totGridsDat(:,:,:,ii), dim=1))
+    ! write(*,*) minval(minval(totGridsDat(:,:,:,ii), dim=2)), &
+    !   & maxval(maxval(totGridsDat(:,:,:,ii), dim=2))
+    ! write(*,*) minval(minval(totGridsDat(:,:,:,ii), dim=3)), &
+    !   & maxval(maxval(totGridsDat(:,:,:,ii), dim=3))
 
     ! Build and dump desired properties of the current level
     if (tPlotLevel) then
@@ -364,10 +421,18 @@ program waveplot
       if (wp%option%tPlotReal) then
 
         if (wp%xml%tRealHam) then
-          buffer(:,:,:) = totGridsDat(ii)%data
+          buffer(:,:,:) = totGridsDat(:,:,:,ii)
         else
-          buffer(:,:,:) = real(totGridsDat(ii)%data, dp)
+          buffer(:,:,:) = real(totGridsDatCplx(:,:,:,1, ii), dp)
         end if
+
+        write(*,*) "buffer%data"
+        write(*,*) minval(minval(buffer, dim=1)), &
+          & maxval(maxval(buffer, dim=1))
+        write(*,*) minval(minval(buffer, dim=2)), &
+          & maxval(maxval(buffer, dim=2))
+        write(*,*) minval(minval(buffer, dim=3)), &
+          & maxval(maxval(buffer, dim=3))
 
         write (comments(2), 9991) wp%xml%identity, iSpin, iKPoint, iLevel
 9991    format('Calc-Id:',I11,', Spin:',I2,', K-Point:',I6,', State:',I6, ', real')
@@ -379,15 +444,16 @@ program waveplot
       end if
 
 ! #######################NOT-IMPLEMENTED############################################################
-!       if (wp%option%tPlotImag) then
-!         buffer(:,:,:) = aimag(totGridDat%data)
-!         write (comments(2), 9992) wp%xml%identity, iSpin, iKPoint, iLevel
-! 9992    format('Calc-Id:',I11,', Spin:',I2,', K-Point:',I6,', State:',I6, ', imag')
-!         fileName = "wp-" // i2c(iSpin) // "-" // i2c(iKPoint) // "-" //i2c(iLevel) // "-imag.cube"
-!         call writeCubeFile(wp%xml%geo, wp%atomicNumber%atomicNumbers, wp%internal%totGridVec,&
-!             & wp%option%totGridOrig, buffer, fileName, comments, wp%option%repeatBox)
-!         write(stdout, "(A)") "File '" // trim(fileName) // "' written"
-!       end if
+      if (wp%option%tPlotImag) then
+        ! buffer(:,:,:) = aimag(totGridsDat(:,:,:,ii))
+        buffer(:,:,:) = aimag(totGridsDatCplx(:,:,:,1, ii))
+        write (comments(2), 9992) wp%xml%identity, iSpin, iKPoint, iLevel
+9992    format('Calc-Id:',I11,', Spin:',I2,', K-Point:',I6,', State:',I6, ', imag')
+        fileName = "wp-" // i2c(iSpin) // "-" // i2c(iKPoint) // "-" //i2c(iLevel) // "-imag.cube"
+        call writeCubeFile(wp%xml%geo, wp%atomicNumber%atomicNumbers, wp%internal%totGridVec,&
+            & wp%option%totGridOrig, buffer, fileName, comments, wp%option%repeatBox)
+        write(stdout, "(A)") "File '" // trim(fileName) // "' written"
+      end if
 
     end if
 

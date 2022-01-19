@@ -31,7 +31,7 @@ module waveplot_initwaveplot
 
   ! use waveplot_gridcache, only : TGridCache, init
   use waveplot_molorb, only : TMolecularOrbital, init, TSpeciesBasis
-  use waveplot_grids, only : modifyEigenvecs
+  use waveplot_grids, only : modifyEigenvecs, modifyEigenvecsCplx
   use waveplot_slater, only : init
 
 
@@ -62,6 +62,9 @@ module waveplot_initwaveplot
     !> Occupations
     real(dp), allocatable :: occupations(:,:,:)
 
+    !> k-points and weights
+    real(dp), allocatable :: kPointsandWeight(:,:)
+
   end type TXml
 
 
@@ -75,7 +78,7 @@ module waveplot_initwaveplot
     real(dp), allocatable :: eigvecsReal(:,:,:,:)
 
     !> Complex eigenvectors
-    complex(dp), allocatable :: eigvecsCplx(:,:)
+    complex(dp), allocatable :: eigvecsCplx(:,:,:,:)
 
   end type TEig
 
@@ -293,6 +296,8 @@ contains
 
     !> Array to temporary store the eigenvectors from the eigenvec.bin file
     real(dp), allocatable :: tmparray(:,:)
+    complex(dp), allocatable :: tmparrayCplx(:,:), tmparrayCplx2(:,:,:,:)
+    character(len=100) :: strBuffer2
 
     !! Write header
     write(stdout, "(A)") repeat("=", 80)
@@ -339,8 +344,34 @@ contains
       call readEigenvecs(eigVecBin, tmparray)
       call modifyEigenvecs(tmparray, this%eig%eigvecsReal, 1, nSpin)
     else
-      allocate(this%eig%eigvecsCplx(this%xml%nOrb, this%eig%nState))
-      call readEigenvecs(eigVecBin, this%eig%eigvecsCplx)
+      allocate(tmparrayCplx(this%xml%nOrb, this%eig%nState * nKPoint * nSpin))
+      allocate(this%eig%eigvecsCplx(this%xml%nOrb, this%eig%nState, nKPoint, nSpin))
+      allocate(this%eig%eigvecsReal(this%xml%nOrb, this%eig%nState, nKPoint, nSpin))
+      allocate(tmparrayCplx2(this%xml%nOrb, this%eig%nState, nKPoint, nSpin))
+      call readEigenvecs(eigVecBin, tmparrayCplx)
+
+      ! write(*, '(/A)') repeat('#', 80)
+      ! write(*, '(8(8(8(2(f5.3, 1X), 2X), /), 2/))') tmparrayCplx(:,:)
+
+      call modifyEigenvecsCplx(tmparrayCplx, tmparrayCplx2, nKPoint, nSpin)
+
+      ! write(strBuffer2, "(I2)") 2 * size(tmparrayCplx(:,9:16), dim=2)
+      ! write(strBuffer2, *) '(' // trim(strBuffer2) // '(f5.3, 1X))'
+    
+      ! write(*, "(/A)") repeat("#", 50)
+      ! write(*,*) "within intiwaveplot.F90:"
+      ! write(*, "(/A)") "tmparrayCplx"
+      ! write(*, strBuffer2) transpose(tmparrayCplx(:,57:64))
+
+      ! write(strBuffer2, "(I2)") 2 * size(tmparrayCplx2(:,:,1,1), dim=2)
+      ! write(strBuffer2, *) '(' // trim(strBuffer2) // '(f5.3, 1X))'
+    
+      ! write(*, "(/A)") repeat("#", 50)
+      ! write(*,*) "within initwaveplot.F90:"
+      ! write(*, "(/A)") "tmparrayCplx2"
+      ! write(*, strBuffer2) transpose(tmparrayCplx2(:,:,8,1))
+
+      this%eig%eigvecsCplx = tmparrayCplx2
     end if
 
     !! Issue warning about unprocessed nodes
@@ -399,6 +430,8 @@ contains
 
     integer :: iSpin, iK
 
+    character(len=100) :: strbuffer
+
     call getChildValue(detailed, "Identity", this%xml%identity)
     call getChild(detailed, "Geometry", tmp)
     call readGeometry(this, tmp)
@@ -413,6 +446,16 @@ contains
     allocate(this%xml%occupations(nState, nKPoint, nSpin))
 
     call getChildValue(detailed, "KPointsAndWeights", kPointsWeights)
+
+    allocate(this%xml%kPointsandWeight(4, nKPoint))
+    this%xml%kPointsandWeight = kPointsWeights
+
+    write(strbuffer, "(I2)") size(kPointsWeights, dim=2)
+    write(*,*) shape(kPointsWeights)
+    write(strbuffer, *) '(' // trim(strbuffer) // '(f5.3, 1X))'
+
+    write(*, '(/A)') "wp%xml%kPointsWeights"
+    write(*, strbuffer) transpose(kPointsWeights)
 
     if (tGroundState) then
 
@@ -876,6 +919,11 @@ contains
 
       do iOrb = 1, nOrb
         read(fd) eigenvecs(:, iOrb)
+        ! write(*, '(8(2(f5.3, 1X), 2X))') eigenvecs(:, iOrb)
+        ! if ((iOrb == 8) .or. (iOrb == 16) .or. (iOrb == 24) .or. (iOrb == 32) .or. (iOrb == 40) &
+        !   & .or. (iOrb == 48) .or. (iOrb == 56) .or. (iOrb == 64)) then
+        !     write(*,*) ' '
+        ! end if
       end do
 
       close(fd)
@@ -883,6 +931,10 @@ contains
     else
       call error('no ' // filename // ' file!')
     end if
+    
+    ! write(*, '(/2A)') repeat('#', 80), 'End of readeigenvecs'
+    ! write(*, '(8(8(8(2(f5.3, 1X), 2X), /), 2/))') eigenvecs(:,:)
+    ! write(*,*) shape(eigenvecs(:,:))
 
   end subroutine read${NAME}$Eigenvecs
 

@@ -31,6 +31,7 @@ module waveplot_grids
   public :: TRealTessY, TRealTessY_init
   public :: subgridsToGlobalGrid
   public :: modifyEigenvecs
+  public :: modifyEigenvecsCplx
 
 
   type :: TGrid
@@ -118,7 +119,7 @@ module waveplot_grids
 
   abstract interface
 
-    subroutine add(this, griddata, eigvec, position, square)
+    subroutine add(this, griddata, eigvec, position, square, tmpresult)
 
       import :: TGridData, dp
       implicit none
@@ -130,13 +131,15 @@ module waveplot_grids
       class(TGridData), intent(in) :: griddata
 
       !> eigenvector of current basis
-      real(dp), intent(in) :: eigvec
+      complex, intent(in) :: eigvec
 
       !> position where to place basis grid onto total grid, shape: [3]
       real(dp), intent(in) :: position(:)
 
       !> True, if data should be squared, i.e. for densities
       logical, intent(in), optional :: square
+
+      real(dp), intent(inout) :: tmpresult(:,:,:)
 
     end subroutine add
 
@@ -167,7 +170,8 @@ module waveplot_grids
 
 
   interface subgridsToGlobalGrid
-    module procedure :: subgridsToUncachedGlobalGrid, subgridsToCachedGlobalGrids
+    module procedure :: subgridsToUncachedGlobalGrid, subgridsToCachedGlobalGrids, &
+      & subgridsToCachedGlobalGridsCplx
   end interface subgridsToGlobalGrid
 
 
@@ -902,7 +906,7 @@ contains
   end subroutine TGrid_getIntersecGridPoints
 
 
-  subroutine TGridData_addTrivial(this, griddata, eigvec, position, square)
+  subroutine TGridData_addTrivial(this, griddata, eigvec, position, square, tmpresult)
 
     !> representation of volumetric grid and data
     class(TGridData), intent(inout) :: this
@@ -911,7 +915,7 @@ contains
     class(TGridData), intent(in) :: griddata
 
     !> eigenvector of current basis
-    real(dp), intent(in) :: eigvec
+    complex, intent(in) :: eigvec
 
     !> position where to place subgrid onto grid, expected shape: [3]
     real(dp), intent(in) :: position(:)
@@ -939,6 +943,8 @@ contains
 
     !> auxiliary variables
     integer :: ii, jj, kk, idx(3)
+
+    real(dp), intent(inout) :: tmpresult(:,:,:)
 
     if (present(square)) then
       tSquare = square
@@ -1019,7 +1025,7 @@ contains
   end subroutine TGridData_getValue
 
 
-  subroutine TGridData_addLinear(this, griddata, eigvec, position, square)
+  subroutine TGridData_addLinear(this, griddata, eigvec, position, square, tmpresult)
 
     !> representation of volumetric grid and data
     class(TGridData), intent(inout) :: this
@@ -1028,7 +1034,7 @@ contains
     class(TGridData), intent(in) :: griddata
 
     !> eigenvector of current basis
-    real(dp), intent(in) :: eigvec
+    complex, intent(in) :: eigvec
 
     !> position where to place subgrid onto grid, expected shape: [3]
     real(dp), intent(in) :: position(:)
@@ -1057,6 +1063,8 @@ contains
     !> auxiliary variables
     integer :: ii, jj, kk, inds(3), idxval(3)
 
+    real(dp), intent(inout) :: tmpresult(:,:,:)
+
     if (present(square)) then
       tSquare = square
     else
@@ -1082,6 +1090,10 @@ contains
         do ii = 1, luGc(1, 2) - luGc(1, 1) + 1
           idxval(1) = ii
           inds(:) = idxval + luGc(:, 1) - this%grid%lowerBounds
+          tmpresult(inds(1), inds(2), inds(3)) = eigvec * & 
+            & trilinearInterpolation(real(roundedIntersecSubGc(:, ii, jj, kk), dp),&
+            & real(roundedIntersecSubGc(:, ii, jj, kk) + 1, dp), scData(:,:,:, ii, jj, kk),&
+            & intersecSubGc(:, ii, jj, kk))
           this%data(inds(1), inds(2), inds(3)) = this%data(inds(1), inds(2), inds(3))&
               & + eigvec * trilinearInterpolation(real(roundedIntersecSubGc(:, ii, jj, kk), dp),&
               & real(roundedIntersecSubGc(:, ii, jj, kk) + 1, dp), scData(:,:,:, ii, jj, kk),&
@@ -1142,6 +1154,8 @@ contains
     !> auxiliary variables
     integer :: iGrid, iOrb, iAtom, iCell, iSubgrid
 
+    real(dp) :: tmp(1,1,1)
+
     ! try to ensure a smooth runtime
     @:ASSERT(size(coeffs) == size(orbitalToAtom))
     @:ASSERT(size(coeffs) == size(orbitalToSubgrid))
@@ -1175,7 +1189,7 @@ contains
     !$omp parallel do default(none)&
     !$omp& shared(nRegions, regionGridDat, subgridsDat, orbitalToAtom, orbitalToSubgrid,&
     !$omp& coords, coeffs, tAddDensities)&
-    !$omp& private(iGrid, iOrb, iAtom, iSubgrid, iCell)
+    !$omp& private(iGrid, iOrb, iAtom, iSubgrid, iCell, tmp)
     lpGrid: do iGrid = 1, nRegions
       lpOrb: do iOrb = 1, size(coeffs)
 
@@ -1184,8 +1198,8 @@ contains
 
         lpCell: do iCell = 1, size(coords, dim=3)
 
-          call regionGridDat(iGrid)%add(subgridsDat(iSubgrid), coeffs(iOrb),&
-              & coords(:, iAtom, iCell), square=tAddDensities)
+          call regionGridDat(iGrid)%add(subgridsDat(iSubgrid), cmplx(0, coeffs(iOrb)),&
+              & coords(:, iAtom, iCell), square=tAddDensities, tmpresult=tmp)
 
         end do lpCell
 
@@ -1198,7 +1212,7 @@ contains
 
   subroutine subgridsToCachedGlobalGrids(globalGridDat, subgridsDat, coords, coeffs, levelIndex,&
       & orbitalToAtom, orbitalToSubgrid, nRegions, pCopyBuffers, globalGridsDat, addDensities,&
-      & gridInterType)
+      & gridInterType, kPointsandWeights)
 
     !> prototype of global grid instance
     type(TGridData), intent(in) :: globalGridDat
@@ -1228,13 +1242,16 @@ contains
     real(dp), intent(in), pointer :: pCopyBuffers(:,:,:,:)
 
     !> representation of volumetric grids and data, exp. shape: [nCache]
-    type(TGridData), intent(out), allocatable :: globalGridsDat(:)
+    ! type(TGridData), intent(out), allocatable :: globalGridsDat(:)
+    real(dp), intent(out), allocatable :: globalGridsDat(:,:,:,:)
 
     !> add densities instead of wave functions
     logical, intent(in), optional :: addDensities
 
     !> Interpolation type for the grid interpolation
     character(len=*), intent(in), optional :: gridInterType
+
+    real(dp), intent(in), optional :: kPointsandWeights(:,:)
 
     !> grid parallel regions, holding global grid sections
     type(TGridData), allocatable :: regionGridDat(:)
@@ -1251,9 +1268,28 @@ contains
     !> temporary data containers
     real(dp), allocatable, target :: regionData(:,:,:)
     real(dp), pointer :: pRegionData(:,:,:), pTmpData(:,:,:)
+    real(dp), allocatable, target :: regionBuffer(:,:,:)
+    ! real(dp), allocatable :: contribution1(:,:,:,:), contribution2(:,:,:,:)
+    ! real(dp), allocatable :: contribution3(:,:,:,:), contribution4(:,:,:,:)
+    real(dp), allocatable :: contribution(:,:,:,:,:), contribution2(:,:,:,:)
 
     !> auxiliary variables
     integer :: iGrid, iOrb, iCell, iAtom, iSubgrid, iState, iSpin, iKPoint, iL
+
+    real(dp) :: weight
+
+    character(len=100) :: strbuffer
+
+    real(dp), parameter :: cellVec(3, 27) = &
+      &transpose(reshape([0.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, &
+      & -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+      & 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+      & 0.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+      & -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, -1.0_dp, -1.0_dp, &
+      & -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+      & 0.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+      & -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, &
+      & 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp], [27, 3]))
 
     ! try to ensure a smooth runtime
     @:ASSERT(size(coeffs, dim=1) == size(orbitalToAtom))
@@ -1264,26 +1300,45 @@ contains
     @:ASSERT(size(coords, dim=3) >= 1)
     @:ASSERT(nRegions >= 1)
 
+    write(*, '(/A)') 'grids.F90 - cellVec'
+    write(strBuffer, "(I2)") size(cellVec, dim=2)
+    write(strBuffer, *) '(' // trim(strbuffer) // '(f3.0, 1X))'
+    write(*, strbuffer) transpose(cellVec)
+
+    write(strBuffer, "(I2)") size(coeffs(:,:,1,1), dim=2)
+    write(strBuffer, *) '(' // trim(strbuffer) // '(f6.3, 1X))'
+  
+    write(*, "(/A)") repeat("#", 50)
+    write(*,*) "within subgridsToCachedGlobalGrids.F90:"
+    write(*, "(/A)") "coeffs"
+    write(*, strBuffer) transpose(coeffs(:,:,8,1))
+
     if (present(addDensities)) then
       tAddDensities = addDensities
     else
       tAddDensities = .false.
     end if
 
-    ! generate global grid caches from prototype
-    allocate(globalGridsDat(size(coeffs, dim=2) * size(coeffs, dim=3) * 2))
-    globalGridsDat(:) = globalGridDat
+    allocate(globalGridsDat(globalGridDat%grid%nPoints(1), globalGridDat%grid%nPoints(2), &
+      & globalGridDat%grid%nPoints(3), size(levelIndex, dim=2)))
 
-    ! separate data pointers for grid caches
-    do iState = 1, size(levelIndex, dim=2)
-      globalGridsDat(iState)%data => pCopyBuffers(:,:,:, iState)
-    end do
+    globalGridsDat(:,:,:,:) = 0.0_dp
+
+    allocate(regionBuffer(globalGridDat%grid%nPoints(1), globalGridDat%grid%nPoints(2), &
+      & globalGridDat%grid%nPoints(3)))
+    regionBuffer(:,:,:) = 0.0_dp
 
     ! get start and end index of every parallel region of the global grid instance
     call getStartAndEndIndices(size(globalGridDat%data, dim=3), nRegions, tiling)
 
     ! allocate regional global grid tiles
     allocate(regionGridDat(nRegions))
+
+    write(strBuffer, "(I2)") size(tiling, dim=2)
+    write(strBuffer, *) '(' // trim(strbuffer) // '(i3, 1X))'
+
+    write(*, '(/A)') 'tiling'
+    write(*, strbuffer) transpose(tiling)
 
     ! assign subgrids to parallel regions of the total grid
     do iGrid = 1, nRegions
@@ -1292,16 +1347,75 @@ contains
       tmpGrid%upperBounds(3) = tiling(2, iGrid) - 1
       tmpGrid%nPoints(3) = tiling(2, iGrid) - tiling(1, iGrid) + 1
       pTmpData => globalGridDat%data(:,:, tiling(1, iGrid):tiling(2, iGrid))
-      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, gridInterType=gridInterType)
+      ! pTmpData => regionBuffer(:,:, tiling(1, iGrid):tiling(2, iGrid))
+      call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, rwInterType='spline', &
+        & gridInterType=gridInterType)
     end do
 
     write(*, '(/A)') 'shape(coeffs)'
     write(*,*) shape(coeffs)
 
-    !$omp parallel do default(none)&
-    !$omp& shared(nRegions, regionGridDat, subgridsDat, orbitalToAtom, orbitalToSubgrid,&
-    !$omp& coords, coeffs, levelIndex, globalGridsDat, tiling, tAddDensities)&
-    !$omp& private(iGrid, iOrb, iAtom, iSubgrid, iCell, iState, iL, iSpin, iKPoint)
+    write(*,*) "globalGridsDat(1)%data"
+    write(*,*) minval(minval(globalGridsDat(:,:,:,1), dim=1)), &
+      & maxval(maxval(globalGridsDat(:,:,:,1), dim=1))
+    write(*,*) minval(minval(globalGridsDat(:,:,:,1), dim=2)), &
+      & maxval(maxval(globalGridsDat(:,:,:,1), dim=2))
+    write(*,*) minval(minval(globalGridsDat(:,:,:,1), dim=3)), &
+      & maxval(maxval(globalGridsDat(:,:,:,1), dim=3))
+
+    write(*,*) "globalGridDat%data"
+    write(*,*) minval(minval(globalGridDat%data, dim=1)), &
+      & maxval(maxval(globalGridDat%data, dim=1))
+    write(*,*) minval(minval(globalGridDat%data, dim=2)), &
+      & maxval(maxval(globalGridDat%data, dim=2))
+    write(*,*) minval(minval(globalGridDat%data, dim=3)), &
+      & maxval(maxval(globalGridDat%data, dim=3))
+
+    ! do iState = 1, size(levelIndex, dim=2)
+    !   globalGridsDat(iState)%data(:,:,:) = 0.0_dp
+    ! end do
+
+    write(*, '(/A)') 'orbitalToAtom and orbitalToSubgrid'
+    write(*,*) orbitalToAtom
+    write(*,*) orbitalToSubgrid
+
+    ! allocate(contribution1(80, 80, tiling(1, 1) - 1:tiling(2, 1) - 1, 27))
+    ! allocate(contribution2(80, 80, tiling(1, 2) - 1:tiling(2, 2) - 1, 27))
+    ! allocate(contribution3(80, 80, tiling(1, 3) - 1:tiling(2, 3) - 1, 27))
+    ! allocate(contribution4(80, 80, tiling(1, 4) - 1:tiling(2, 4) - 1, 27))
+
+    ! do iCell = 1, size(coords, dim=3)
+    !   write(*,*) 'iCell: ', iCell
+    !   do iOrb = 1, size(coeffs, dim=1)
+    !     write(*,*) 'iOrb', iOrb
+
+    !     iAtom = orbitalToAtom(iOrb)
+    !     iSubgrid = orbitalToSubgrid(iOrb)
+
+    !     contribution1(:,:,:, iCell) = contribution1(:,:,:, iCell) + &
+    !         & getCellContribution(regionGridDat(1), &
+    !         & subgridsDat(iSubgrid), 1.0_dp, coords(:, iAtom, iCell), square=tAddDensities)
+
+    !     contribution2(:,:,:, iCell) = contribution2(:,:,:, iCell) + &
+    !         & getCellContribution(regionGridDat(2), &
+    !         & subgridsDat(iSubgrid), 1.0_dp, coords(:, iAtom, iCell), square=tAddDensities)
+
+    !     contribution3(:,:,:, iCell) = contribution3(:,:,:, iCell) + &
+    !         & getCellContribution(regionGridDat(3), &
+    !         & subgridsDat(iSubgrid), 1.0_dp, coords(:, iAtom, iCell), square=tAddDensities)
+
+    !     contribution4(:,:,:, iCell) = contribution4(:,:,:, iCell) + &
+    !         & getCellContribution(regionGridDat(4), &
+    !         & subgridsDat(iSubgrid), 1.0_dp, coords(:, iAtom, iCell), square=tAddDensities)
+
+    !   end do
+    ! end do
+
+    ! do iCell = 1, size()
+
+    allocate(contribution(80, 80, 80, size(coords, dim=3), size(orbitalToAtom, dim=1)))
+    contribution(:,:,:,:,:) = 0.0_dp
+
     lpGrid: do iGrid = 1, nRegions
       lpOrb: do iOrb = 1, size(coeffs, dim=1)
 
@@ -1313,8 +1427,9 @@ contains
 
         lpCell: do iCell = 1, size(coords, dim=3)
 
-          call regionGridDat(iGrid)%add(subgridsDat(iSubgrid), 1.0_dp, coords(:, iAtom, iCell),&
-              & square=tAddDensities)
+          call regionGridDat(iGrid)%add(subgridsDat(iSubgrid), cmplx(0, 1.0_dp), coords(:, iAtom, iCell),&
+              & square=tAddDensities, &
+              & tmpresult=contribution(:,:, tiling(1, iGrid):tiling(2, iGrid), iCell, iAtom))
 
         end do lpCell
 
@@ -1325,17 +1440,254 @@ contains
           iKPoint = levelIndex(2, iState)
           iSpin = levelIndex(3, iState)
 
-          globalGridsDat(iState)%data(:,:, tiling(1, iGrid):tiling(2, iGrid)) =&
-              & globalGridsDat(iState)%data(:,:, tiling(1, iGrid):tiling(2, iGrid))&
-              & + coeffs(iOrb, iL, iKPoint, iSpin) * regionGridDat(iGrid)%data
+          weight = coeffs(iOrb, iL, iKPoint, iSpin)
+          write(*, '(A, i2, 2X, i2, 2X, i2, 2X, i2, 2X, f6.3)') 'iOrb, iL, iKPoint, iSpin, coeffs: '&
+            & , iOrb, iL, iKPoint, iSpin, weight
+
+          ! globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iState) =&
+          !     & globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iState)&
+          !     & + 0.125_dp * weight * regionGridDat(iGrid)%data
+          
+          do iCell = 1, size(coords, dim=3)
+
+            globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iState) =&
+                & globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iState)&
+                & + 0.125_dp * weight * contribution(:,:, tiling(1, iGrid):tiling(2, iGrid), iCell, &
+                & iAtom) * cos(kPointsandWeights(1, iKPoint) * cellVec(1, iGrid) + &
+                & kPointsandWeights(2, iKPoint) * cellVec(2, iGrid) + &
+                & kPointsandWeights(3, iKPoint) * cellVec(3, iGrid))
+          
+          end do
 
         end do lpStates
 
       end do lpOrb
     end do lpGrid
-    !$omp end parallel do
+
+    write(*,*) "globalGridDat%data"
+    write(*,*) minval(minval(globalGridDat%data, dim=1)), &
+      & maxval(maxval(globalGridDat%data, dim=1))
+    write(*,*) minval(minval(globalGridDat%data, dim=2)), &
+      & maxval(maxval(globalGridDat%data, dim=2))
+    write(*,*) minval(minval(globalGridDat%data, dim=3)), &
+      & maxval(maxval(globalGridDat%data, dim=3))
 
   end subroutine subgridsToCachedGlobalGrids
+
+
+  subroutine subgridsToCachedGlobalGridsCplx(globalGridDat, subgridsDat, coords, coeffs, levelIndex,&
+    & orbitalToAtom, orbitalToSubgrid, nRegions, pCopyBuffers, globalGridsDat, plottedKPoints, addDensities,&
+    & gridInterType, kPointsandWeights)
+
+  !> prototype of global grid instance
+  type(TGridData), intent(in) :: globalGridDat
+
+  !> subgrids to add to global grid instances, exp. shape: [nOrbitals]
+  type(TGridData), intent(in) :: subgridsDat(:)
+
+  !> coordinates, defining the cartesian positions of the subgrids, exp. shape: [3, nAtom, nCell]
+  real(dp), intent(in) :: coords(:,:,:)
+
+  !> orbital-resolved coefficients for volumetric data, exp. shape: [nOrbitals, nCache]
+  complex(dp), intent(in) :: coeffs(:,:,:,:)
+
+  !> Index Mapping from state index to [Level, KPoint, Spin]
+  integer, intent(in) :: levelIndex(:,:)
+
+  !> index mapping from orbital to atom, exp. shape: [nOrbitals]
+  integer, intent(in) :: orbitalToAtom(:)
+
+  !> index mapping from orbital to subgrid, exp. shape: [nOrbitals]
+  integer, intent(in) :: orbitalToSubgrid(:)
+
+  !> number of parallel global regions
+  integer, intent(in) :: nRegions
+
+  !> pointer to target array that holds the volumetric data of grid caches
+  real(dp), intent(in), pointer :: pCopyBuffers(:,:,:,:)
+
+  !> representation of volumetric grids and data, exp. shape: [nCache]
+  ! type(TGridData), intent(out), allocatable :: globalGridsDat(:)
+  complex(dp), intent(out), allocatable :: globalGridsDat(:,:,:,:,:)
+
+  integer, intent(in) :: plottedKPoints(:)
+
+  !> add densities instead of wave functions
+  logical, intent(in), optional :: addDensities
+
+  !> Interpolation type for the grid interpolation
+  character(len=*), intent(in), optional :: gridInterType
+
+  real(dp), intent(in), optional :: kPointsandWeights(:,:)
+
+  !> grid parallel regions, holding global grid sections
+  type(TGridData), allocatable :: regionGridDat(:)
+
+  !> start and end indices of all parallel tiles, exp. shape: [2, nRegions]
+  integer, allocatable :: tiling(:,:)
+
+  !> true, if optional argument provided and .true., otherwise False
+  logical :: tAddDensities
+
+  !> temporary grid instance
+  type(TGrid) :: tmpGrid
+
+  !> temporary data containers
+  real(dp), allocatable, target :: regionData(:,:,:)
+  real(dp), pointer :: pRegionData(:,:,:), pTmpData(:,:,:)
+  real(dp), allocatable, target :: regionBuffer(:,:,:)
+  ! real(dp), allocatable :: contribution1(:,:,:,:), contribution2(:,:,:,:)
+  ! real(dp), allocatable :: contribution3(:,:,:,:), contribution4(:,:,:,:)
+  real(dp), allocatable :: basis(:,:,:,:,:), bloch_u(:,:,:,:,:)
+
+  !> auxiliary variables
+  integer :: iGrid, iOrb, iCell, iAtom, iSubgrid, iState, iSpin, iKPoint, iL
+
+  real(dp) :: weight
+
+  character(len=100) :: strbuffer
+
+  integer, parameter :: kPointIndex(3) = [1, 2, 3, 4, 5, 6, 7, 8]
+  integer :: current_kpoint
+
+  real(dp), parameter :: cellVec(3, 27) = &
+    &transpose(reshape([0.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, &
+    & -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
+    & 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+    & 0.0_dp, -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+    & -1.0_dp, -1.0_dp, -1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, -1.0_dp, -1.0_dp, &
+    & -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, &
+    & 0.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+    & -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, &
+    & 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, -1.0_dp, 0.0_dp, 1.0_dp], [27, 3]))
+
+  ! try to ensure a smooth runtime
+  @:ASSERT(size(coeffs, dim=1) == size(orbitalToAtom))
+  @:ASSERT(size(coeffs, dim=1) == size(orbitalToSubgrid))
+  @:ASSERT(size(subgridsDat) == maxval(orbitalToSubgrid))
+  @:ASSERT(size(coords, dim=1) == 3)
+  @:ASSERT(size(coords, dim=2) == maxval(orbitalToAtom))
+  @:ASSERT(size(coords, dim=3) >= 1)
+  @:ASSERT(nRegions >= 1)
+
+  write(*, '(/A)') 'grids.F90 - cellVec'
+  write(strBuffer, "(I2)") size(cellVec, dim=2)
+  write(strBuffer, *) '(' // trim(strbuffer) // '(f3.0, 1X))'
+  write(*, strbuffer) transpose(cellVec)
+
+  write(strBuffer, "(I2)") size(coeffs(:,:,1,1), dim=2)
+  write(strBuffer, *) '(' // trim(strbuffer) // '(f6.3, 1X))'
+
+  write(*, "(/A)") repeat("#", 50)
+  write(*,*) "within subgridsToCachedGlobalGrids.F90:"
+  write(*, "(/A)") "coeffs"
+  write(*, strBuffer) transpose(coeffs(:,:,8,1))
+
+  if (present(addDensities)) then
+    tAddDensities = addDensities
+  else
+    tAddDensities = .false.
+  end if
+
+  allocate(globalGridsDat(globalGridDat%grid%nPoints(1), globalGridDat%grid%nPoints(2), &
+    & globalGridDat%grid%nPoints(3), 1, 3))
+
+  globalGridsDat(:,:,:,:,:) = 0.0_dp
+
+  allocate(regionBuffer(globalGridDat%grid%nPoints(1), globalGridDat%grid%nPoints(2), &
+    & globalGridDat%grid%nPoints(3)))
+  regionBuffer(:,:,:) = 0.0_dp
+
+  ! get start and end index of every parallel region of the global grid instance
+  call getStartAndEndIndices(size(globalGridDat%data, dim=3), nRegions, tiling)
+
+  ! allocate regional global grid tiles
+  allocate(regionGridDat(nRegions))
+
+  write(strBuffer, "(I2)") size(tiling, dim=2)
+  write(strBuffer, *) '(' // trim(strbuffer) // '(i3, 1X))'
+
+  write(*, '(/A)') 'tiling'
+  write(*, strbuffer) transpose(tiling)
+
+  ! assign subgrids to parallel regions of the total grid
+  do iGrid = 1, nRegions
+    tmpGrid = globalGridDat%grid
+    tmpGrid%lowerBounds(3) = tiling(1, iGrid) - 1
+    tmpGrid%upperBounds(3) = tiling(2, iGrid) - 1
+    tmpGrid%nPoints(3) = tiling(2, iGrid) - tiling(1, iGrid) + 1
+    pTmpData => globalGridDat%data(:,:, tiling(1, iGrid):tiling(2, iGrid))
+    ! pTmpData => regionBuffer(:,:, tiling(1, iGrid):tiling(2, iGrid))
+    call TGridData_init(regionGridDat(iGrid), tmpGrid, pTmpData, rwInterType='spline', &
+      & gridInterType=gridInterType)
+  end do
+
+  write(*, '(/A)') 'shape(coeffs)'
+  write(*,*) shape(coeffs)
+
+  write(*,*) "globalGridDat%data"
+  write(*,*) minval(minval(globalGridDat%data, dim=1)), &
+    & maxval(maxval(globalGridDat%data, dim=1))
+  write(*,*) minval(minval(globalGridDat%data, dim=2)), &
+    & maxval(maxval(globalGridDat%data, dim=2))
+  write(*,*) minval(minval(globalGridDat%data, dim=3)), &
+    & maxval(maxval(globalGridDat%data, dim=3))
+
+  write(*, '(/A)') 'orbitalToAtom and orbitalToSubgrid'
+  write(*,*) orbitalToAtom
+  write(*,*) orbitalToSubgrid
+
+  allocate(basis(80, 80, 80, size(coords, dim=3), size(orbitalToAtom, dim=1)))
+  basis(:,:,:,:,:) = 0.0_dp
+
+  allocate(bloch_u(80, 80, 80, size(levelIndex, dim=2), size(orbitalToAtom, dim=1)))
+  bloch_u(:,:,:,:,:) = 0.0_dp
+
+  lpGrid: do iGrid = 1, nRegions
+    kpoints: do iKPoint = 1, size(plottedKPoints, dim=1)
+      lpOrb: do iOrb = 1, size(coeffs, dim=1)
+
+        ! reset volumetric grid values
+        regionGridDat(iGrid)%data(:,:,:) = 0.0_dp
+
+        iAtom = orbitalToAtom(iOrb)
+        iSubgrid = orbitalToSubgrid(iOrb)
+        ! iKPoint = levelIndex(2, iState)
+        current_kpoint = plottedKPoints(iKPoint)
+
+        lpCell: do iCell = 1, size(coords, dim=3)
+          
+          call regionGridDat(iGrid)%add(subgridsDat(iSubgrid), exp(cmplx(0, &
+                & dot_product(kPointsandWeights(1:3, current_kpoint), cellVec(:, iCell)))), &
+                & coords(:, iAtom, iCell),&
+                & square=tAddDensities, &
+                & tmpresult=basis(:,:, tiling(1, iGrid):tiling(2, iGrid), iCell, iAtom))
+
+          do iL = 1, size(coeffs, dim=2)
+
+            ! distribute molecular orbitals to state-resolved global grid caches
+            ! lpStates: do iState = 1, size(coeffs, dim=2)
+
+            ! weight = coeffs(iOrb, iL, iKPoint, iSpin)
+            ! write(*, '(A, i2, 2X, i2, 2X, i2, 2X, i2, 2X, f6.3)') 'iOrb, iL, iKPoint, iSpin, coeffs: '&
+            !   & , iOrb, 1, iKPoint, iSpin, weight
+
+            globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iL, iKPoint) =&
+              & globalGridsDat(:,:, tiling(1, iGrid):tiling(2, iGrid), iL, iKPoint)&
+              & + coeffs(iOrb, iL, current_kpoint, 1) * basis(:,:, tiling(1, iGrid):tiling(2, iGrid), iCell, iAtom)) * &
+              & kPointsandWeights(4, current_kpoint)
+          
+          end do
+
+          ! end do lpStates
+
+        end do lpCell
+
+      end do lpOrb
+    end do kpoints
+  end do lpGrid
+
+  end subroutine subgridsToCachedGlobalGridsCplx
 
 
   subroutine TRealTessY_init(this, grid, maxAng)
@@ -1454,6 +1806,36 @@ contains
   end subroutine modifyEigenvecs
 
 
+  ! Takes a 2d array of eigenvectors where the first dimension runs over the orbitals and the
+  ! second dimension runs over the eigenvectors for each level, k-point and spin. It converts this
+  ! array to a 4d array, where the dimensions are the following:
+  ! [orbitals, eigenvectors, k-points, spin].
+  subroutine modifyEigenvecsCplx(eigenvecs_old, eigenvecs_new, KPointNum, SpinNum)
+
+    complex(dp), intent(in) :: eigenvecs_old(:,:)
+    !> Dimensions of eigenvecs_new hold the following data: [orbitals, eigenvectors, k-points, spin]
+    complex(dp), intent(out) :: eigenvecs_new(:,:,:,:)
+
+    integer, intent(in) :: SpinNum
+    integer, intent(in) :: KPointNum
+
+    integer :: nBlock
+
+    !> auxillary variables for do loops
+    integer :: iKP, iS, iL
+
+    nBlock = 0
+    do iS = 1, SpinNum
+      do iKP = 1, KPointNum
+        do iL = 1, size(eigenvecs_old, dim=1)
+          eigenvecs_new(:, iL, iKP, iS) = eigenvecs_old(:, iL + size(eigenvecs_old, dim=1) * nBlock)
+        end do
+        nBlock = nBlock + 1
+      end do
+    end do
+
+  end subroutine modifyEigenvecsCplx
+
 
   pure function crossProduct(vec1, vec2) result(cross)
 
@@ -1468,5 +1850,88 @@ contains
     cross(3) = vec1(1) * vec2(2) - vec1(2) * vec2(1)
 
   end function crossProduct
+
+
+  function getCellContribution(gridrep, griddata, eigvec, position, square) result(contribution)
+
+    !> representation of volumetric grid and data
+    class(TGridData), intent(in) :: gridrep
+
+    !> volumetric data to add to current instance
+    class(TGridData), intent(in) :: griddata
+
+    !> eigenvector of current basis
+    real(dp), intent(in) :: eigvec
+
+    !> position where to place subgrid onto grid, expected shape: [3]
+    real(dp), intent(in) :: position(:)
+
+    !> True, if data should be squared, i.e. for densities
+    logical, intent(in), optional :: square
+
+    !> lower and upper bounds of intersection in integer grid coordinates
+    integer, allocatable :: luGc(:,:)
+
+    !> lower and upper bounds of intersection in real subgrid coordinates
+    real(dp), allocatable :: luSubGc(:,:)
+
+    !> lower subcube corners of grid points
+    real(dp), allocatable :: intersecSubGc(:,:,:,:)
+
+    !> floor rounded lower subcube corners of grid points
+    integer, allocatable :: roundedIntersecSubGc(:,:,:,:)
+
+    !> data corresponding to the eight corners of the subcubes
+    real(dp), allocatable :: scData(:,:,:,:,:,:)
+
+    !> equals square if present, otherwise false
+    logical :: tSquare
+
+    !> auxiliary variables
+    integer :: ii, jj, kk, inds(3), idxval(3)
+
+    real(dp), allocatable :: contribution(:,:,:)
+
+    if (present(square)) then
+      tSquare = square
+    else
+      tSquare = .false.
+    end if
+
+    call checkParallelBasis(gridrep%grid%basis, griddata%grid%basis)
+
+    call gridrep%grid%getSubgridRanges(griddata%grid, position, luGc, luSubGc)
+
+    call gridrep%grid%getIntersecGridPoints(griddata%grid, luGc, luSubGc, intersecSubGc)
+    roundedIntersecSubGc = floor(intersecSubGc)
+    call griddata%getSubcubeCornsAndVals(roundedIntersecSubGc, scData)
+
+    if (tSquare) then
+      scData(:,:,:,:,:,:) = scData * scData
+    end if
+
+    allocate(contribution(size(gridrep%data, dim=1), size(gridrep%data, dim=2), &
+        & size(gridrep%data, dim=3)))
+
+    do kk = 1, luGc(3, 2) - luGc(3, 1) + 1
+      idxval(3) = kk
+      do jj = 1, luGc(2, 2) - luGc(2, 1) + 1
+        idxval(2) = jj
+        do ii = 1, luGc(1, 2) - luGc(1, 1) + 1
+          idxval(1) = ii
+          inds(:) = idxval + luGc(:, 1) - gridrep%grid%lowerBounds
+          ! this%data(inds(1), inds(2), inds(3)) = this%data(inds(1), inds(2), inds(3))&
+          !     & + eigvec * trilinearInterpolation(real(roundedIntersecSubGc(:, ii, jj, kk), dp),&
+          !     & real(roundedIntersecSubGc(:, ii, jj, kk) + 1, dp), scData(:,:,:, ii, jj, kk),&
+          !     & intersecSubGc(:, ii, jj, kk))
+          contribution = eigvec * &
+              & trilinearInterpolation(real(roundedIntersecSubGc(:, ii, jj, kk), dp),&
+              & real(roundedIntersecSubGc(:, ii, jj, kk) + 1, dp), scData(:,:,:, ii, jj, kk),&
+              & intersecSubGc(:, ii, jj, kk))
+        end do
+      end do
+    end do
+
+  end function getCellContribution
 
 end module waveplot_grids
